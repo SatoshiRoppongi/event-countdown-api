@@ -1,0 +1,5 @@
+-- tag テーブル
+CREATE TABLE tags (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL
+)
