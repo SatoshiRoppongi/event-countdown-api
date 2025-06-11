@@ -1,25 +1,67 @@
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{middleware::Logger, web, App, HttpServer};
+use dotenvy::dotenv;
+use std::env;
 
-#[get("/")]
-async fn hello() -> impl Responder {
-  HttpResponse::Ok().body("Hello world!")
-}
+mod handlers;
+mod middleware;
+mod models;
+mod schema;
+mod services;
+mod utils;
 
-#[post("/echo")]
-async fn echo(req_body: String) -> impl Responder {
-  HttpResponse::Ok().body(req_body)
-}
-
-async fn manual_hello() -> impl Responder {
-  HttpResponse::Ok().body("Hey there!")
-}
+use handlers::{auth, comments, events, users};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-  HttpServer::new(|| {
-    App::new().service(hello).service(echo).route("/hey", web::get().to(manual_hello))
-  })
-  .bind(("127.0.0.1", 8080))?
-  .run()
-  .await
+    dotenv().ok();
+    env_logger::init();
+
+    let port = env::var("PORT")
+        .unwrap_or_else(|_| "8080".to_string())
+        .parse::<u16>()
+        .expect("PORT must be a valid number");
+
+    log::info!("Starting server on port {}", port);
+
+    HttpServer::new(|| {
+        App::new().wrap(Logger::default()).service(
+            web::scope("/api/v1")
+                // 認証関連
+                .service(
+                    web::scope("/auth")
+                        .route("/register", web::post().to(auth::register))
+                        .route("/login", web::post().to(auth::login))
+                        .route("/logout", web::post().to(auth::logout)),
+                )
+                // イベント関連
+                .service(
+                    web::scope("/events")
+                        .route("", web::get().to(events::get_events))
+                        .route("", web::post().to(events::create_event))
+                        .route("/{id}", web::get().to(events::get_event))
+                        .route("/{id}", web::put().to(events::update_event))
+                        .route("/{id}", web::delete().to(events::delete_event))
+                        .route("/{id}/comments", web::get().to(events::get_event_comments))
+                        .route("/{id}/favorite", web::post().to(events::add_favorite))
+                        .route("/{id}/favorite", web::delete().to(events::remove_favorite)),
+                )
+                // コメント関連
+                .service(
+                    web::scope("/comments")
+                        .route("", web::post().to(comments::create_comment))
+                        .route("/{id}", web::delete().to(comments::delete_comment))
+                        .route("/{id}/report", web::post().to(comments::report_comment)),
+                )
+                // ユーザー関連
+                .service(
+                    web::scope("/users")
+                        .route("/me", web::get().to(users::get_profile))
+                        .route("/me", web::put().to(users::update_profile))
+                        .route("/me/favorites", web::get().to(users::get_favorites)),
+                ),
+        )
+    })
+    .bind(("127.0.0.1", port))?
+    .run()
+    .await
 }

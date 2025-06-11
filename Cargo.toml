@@ -9,7 +9,22 @@ path = "src/bin/reset_dev.rs"
 
 [dependencies]
 actix-web = "4"
-diesel = { version = "2.2.0", features = ["postgres"] }
+diesel = { version = "2.2.0", features = ["postgres", "chrono", "uuid"] }
+diesel-migrations = "2.0"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+bcrypt = "0.15"
+jsonwebtoken = "9"
+reqwest = { version = "0.11", features = ["json"] }
+env_logger = "0.10"
+log = "0.4"
+regrex = "1.0"
+r2d2 = "0.8"
+actix-cors = "0.6"
+
 # build libpq and openssl as part of the build process
 # uncomment these lines if you run into setup issues
 # pq-sys = { version = "0.6", features = ["bundled"] }
