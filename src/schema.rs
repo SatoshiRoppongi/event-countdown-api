@@ -78,6 +78,14 @@ diesel::table! {
         gender -> Nullable<Varchar>,
         profile -> Nullable<Text>,
         created_at -> Nullable<Timestamp>,
+        #[max_length = 50]
+        oauth_provider -> Nullable<Varchar>,
+        #[max_length = 255]
+        oauth_id -> Nullable<Varchar>,
+        #[max_length = 255]
+        email -> Nullable<Varchar>,
+        #[max_length = 255]
+        password -> Nullable<Varchar>,
     }
 }
 

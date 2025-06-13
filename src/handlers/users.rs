@@ -7,17 +7,23 @@ use crate::schema::{event_tags, events, favorites, tags, users};
 use crate::utils::database::get_connection;
 
 pub async fn get_profile(req: HttpRequest) -> Result<impl Responder> {
-    let user_id = get_user_id_from_request(&req)
-        .ok_or_else(|| HttpResponse::Unauthorized().json("Authentication required"))?;
+    let user_id = match get_user_id_from_request(&req) {
+        Ok(id) => id,
+        Err(_) => return Ok(HttpResponse::Unauthorized().json("Authentication required")),
+    };
 
-    let mut conn = get_connection()
-        .map_err(|_| HttpResponse::InternalServerError().json("Database connection failed"))?;
+    let mut conn = match get_connection() {
+        Ok(conn) => conn,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Database connection failed")),
+    };
 
-    let user = users::table
+    let user = match users::table
         .find(user_id)
         .first::<User>(&mut conn)
-        .optional()
-        .map_err(|_| HttpResponse::InternalServerError().json("Database error"))?;
+        .optional() {
+        Ok(user) => user,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Database error")),
+    };
 
     match user {
         Some(user) => Ok(HttpResponse::Ok().json(user)),

@@ -1,32 +1,27 @@
 use actix_web::HttpRequest;
-use jsonwebtoken::{decode, DecodingKey, Validation};
-use serde::{Deserialize, Serialize};
-use std::env;
+use crate::services::auth_service::{AuthService, Claims};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Claims {
-    pub sub: i32,
-    pub exp: usize,
+pub fn get_user_id_from_request(req: &HttpRequest) -> Result<i32, String> {
+    let token = extract_token_from_request(req)?;
+    let claims = AuthService::verify_token(&token)?;
+    Ok(claims.sub)
 }
 
-pub fn get_user_id_from_request(req: &HttpRequest) -> Option<i32> {
-    let auth_header = req.headers().get("Authorization")?;
-    let auth_str = auth_header.to_str().ok()?;
+pub fn extract_token_from_request(req: &HttpRequest) -> Result<String, String> {
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .ok_or("Authorization header missing")?
+        .to_str()
+        .map_err(|_| "Invalid authorization header")?;
 
-    if !auth_str.starts_with("Bearer ") {
-        return None;
+    if auth_header.starts_with("Bearer ") {
+        Ok(auth_header[7..].to_string())
+    } else {
+        Err("Invalid authorization format".to_string())
     }
+}
 
-    let token = &auth_str[7..]; // Remove "Bearer " prefix
-
-    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "your-secret-key".to_string());
-
-    let token_data = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret.as_ref()),
-        &Validation::default(),
-    )
-    .ok()?;
-
-    Some(token_data.claims.sub)
+pub fn extract_optional_user_id(req: &HttpRequest) -> Option<i32> {
+    get_user_id_from_request(req).ok()
 }

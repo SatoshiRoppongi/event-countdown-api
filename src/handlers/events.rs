@@ -3,7 +3,7 @@ use diesel::prelude::*;
 use serde::Serialize;
 
 use crate::middleware::auth::get_user_id_from_request;
-use crate::models::{Event, EventQuery, EventWithTags, NewEvent, UpdateEvent};
+use crate::models::{Event, EventQuery, EventWithTags, NewEvent, UpdateEvent, UserEventRequest};
 use crate::schema::{event_tags, events, favorites, tags};
 use crate::utils::database::get_connection;
 
@@ -16,14 +16,16 @@ struct EventsResponse {
 }
 
 pub async fn get_events(query: web::Query<EventQuery>, req: HttpRequest) -> Result<impl Responder> {
-    let mut conn = get_connection()
-        .map_err(|_| HttpResponse::InternalServerError().json("Database connection failed"))?;
+    let mut conn = match get_connection() {
+        Ok(conn) => conn,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Database connection failed")),
+    };
 
     let page = query.page.unwrap_or(1);
     let limit = query.limit.unwrap_or(20);
     let offset = (page - 1) * limit;
 
-    let user_id = get_user_id_from_request(&req);
+    let user_id = get_user_id_from_request(&req).ok();
 
     let mut query_builder = events::table.into_boxed();
 
@@ -36,25 +38,54 @@ pub async fn get_events(query: web::Query<EventQuery>, req: HttpRequest) -> Resu
         query_builder = query_builder.filter(events::location.ilike(format!("%{}%", location)));
     }
 
+    if let Some(ref source_type) = query.source_type {
+        query_builder = query_builder.filter(events::source_type.eq(source_type));
+    }
+
+    // 日付範囲でのフィルタリング
+    if let Some(start_date_from) = query.start_date_from {
+        query_builder = query_builder.filter(events::start_date.ge(start_date_from));
+    }
+
+    if let Some(start_date_to) = query.start_date_to {
+        query_builder = query_builder.filter(events::start_date.le(start_date_to));
+    }
+
+    // タグでのフィルタリング
+    if let Some(ref tag_names) = query.tags {
+        let tag_list: Vec<&str> = tag_names.split(',').map(|s| s.trim()).collect();
+        if !tag_list.is_empty() {
+            query_builder = query_builder
+                .inner_join(event_tags::table.inner_join(tags::table))
+                .filter(tags::name.eq_any(tag_list))
+                .group_by(events::id);
+        }
+    }
+
     if let Some(ref search) = query.search {
         query_builder = query_builder.filter(
             events::name
                 .ilike(format!("%{}%", search))
-                .or(events::description.ilike(format!("%{}%", search))),
+                .or(events::description.ilike(format!("%{}%", search)))
+                .or(events::location.ilike(format!("%{}%", search))),
         );
     }
 
-    let total = query_builder
+    let total = match query_builder
         .count()
-        .get_result::<i64>(&mut conn)
-        .map_err(|_| HttpResponse::InternalServerError().json("Failed to count events"))?;
+        .get_result::<i64>(&mut conn) {
+        Ok(count) => count,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Failed to count events")),
+    };
 
-    let events_data = query_builder
+    let events_data = match query_builder
         .order(events::start_date.desc())
         .limit(limit)
         .offset(offset)
-        .load::<Event>(&mut conn)
-        .map_err(|_| HttpResponse::InternalServerError().json("Failed to fetch events"))?;
+        .load::<Event>(&mut conn) {
+        Ok(events) => events,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Failed to fetch events")),
+    };
 
     // タグとお気に入り情報を取得
     let mut events_with_tags = Vec::new();
@@ -141,23 +172,97 @@ pub async fn get_event(path: web::Path<i32>, req: HttpRequest) -> Result<impl Re
 
 pub async fn create_event(
     req: HttpRequest,
-    event_data: web::Json<NewEvent>,
+    event_data: web::Json<UserEventRequest>,
 ) -> Result<impl Responder> {
-    let user_id = get_user_id_from_request(&req)
-        .ok_or_else(|| HttpResponse::Unauthorized().json("Authentication required"))?;
+    let _user_id = match get_user_id_from_request(&req) {
+        Ok(id) => id,
+        Err(_) => return Ok(HttpResponse::Unauthorized().json("認証が必要です")),
+    };
 
-    let mut conn = get_connection()
-        .map_err(|_| HttpResponse::InternalServerError().json("Database connection failed"))?;
+    let mut conn = match get_connection() {
+        Ok(conn) => conn,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("データベース接続に失敗しました")),
+    };
 
-    let mut new_event = event_data.into_inner();
-    new_event.source_type = Some("user".to_string());
+    let event_request = event_data.into_inner();
 
-    let event = diesel::insert_into(events::table)
+    // バリデーション
+    if let Err(error) = event_request.validate() {
+        return Ok(HttpResponse::BadRequest().json(error));
+    }
+
+    let new_event = event_request.to_new_event();
+
+    // イベントを作成
+    let event = match diesel::insert_into(events::table)
         .values(&new_event)
-        .get_result::<Event>(&mut conn)
-        .map_err(|_| HttpResponse::InternalServerError().json("Failed to create event"))?;
+        .get_result::<Event>(&mut conn) {
+        Ok(event) => event,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("イベントの作成に失敗しました")),
+    };
 
-    Ok(HttpResponse::Created().json(event))
+    // タグがある場合は関連付け
+    if let Some(ref tag_names) = event_request.tags {
+        for tag_name in tag_names {
+            if let Err(e) = create_or_associate_tag(&mut conn, event.id, tag_name) {
+                log::warn!("Failed to associate tag '{}': {:?}", tag_name, e);
+            }
+        }
+    }
+
+    // タグ情報を含めてレスポンス
+    let tags_data = match event_tags::table
+        .inner_join(tags::table)
+        .filter(event_tags::event_id.eq(event.id))
+        .select(tags::name)
+        .load::<String>(&mut conn) {
+        Ok(tags) => tags,
+        Err(_) => Vec::new(),
+    };
+
+    let event_with_tags = EventWithTags {
+        event,
+        tags: tags_data,
+        is_favorited: Some(false),
+    };
+
+    Ok(HttpResponse::Created().json(event_with_tags))
+}
+
+fn create_or_associate_tag(conn: &mut PgConnection, event_id: i32, tag_name: &str) -> Result<(), diesel::result::Error> {
+    use crate::models::tag::{NewTag, Tag};
+    use crate::models::event_tag::NewEventTag;
+
+    // タグが存在するかチェック
+    let tag = tags::table
+        .filter(tags::name.eq(tag_name))
+        .first::<Tag>(conn)
+        .optional()?;
+
+    let tag_id = if let Some(tag) = tag {
+        tag.id
+    } else {
+        // タグが存在しない場合は作成
+        let new_tag = NewTag {
+            name: tag_name.to_string(),
+        };
+        diesel::insert_into(tags::table)
+            .values(&new_tag)
+            .get_result::<Tag>(conn)?
+            .id
+    };
+
+    // イベントとタグの関連付け
+    let new_event_tag = NewEventTag {
+        event_id,
+        tag_id,
+    };
+
+    diesel::insert_into(event_tags::table)
+        .values(&new_event_tag)
+        .execute(conn)?;
+
+    Ok(())
 }
 
 pub async fn update_event(

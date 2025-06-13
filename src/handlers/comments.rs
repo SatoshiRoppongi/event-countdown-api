@@ -12,11 +12,15 @@ pub async fn create_comment(
     req: HttpRequest,
     comment_data: web::Json<CreateCommentRequest>,
 ) -> Result<impl Responder> {
-    let user_id = get_user_id_from_request(&req)
-        .ok_or_else(|| HttpResponse::Unauthorized().json("Authentication required"))?;
+    let user_id = match get_user_id_from_request(&req) {
+        Ok(id) => id,
+        Err(_) => return Ok(HttpResponse::Unauthorized().json("Authentication required")),
+    };
 
-    let mut conn = get_connection()
-        .map_err(|_| HttpResponse::InternalServerError().json("Database connection failed"))?;
+    let mut conn = match get_connection() {
+        Ok(conn) => conn,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Database connection failed")),
+    };
 
     let new_comment = NewComment {
         user_id: Some(user_id),
@@ -24,10 +28,12 @@ pub async fn create_comment(
         content: comment_data.content.clone(),
     };
 
-    let comment = diesel::insert_into(comments::table)
+    let comment = match diesel::insert_into(comments::table)
         .values(&new_comment)
-        .get_result::<Comment>(&mut conn)
-        .map_err(|_| HttpResponse::InternalServerError().json("Failed to create comment"))?;
+        .get_result::<Comment>(&mut conn) {
+        Ok(comment) => comment,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Failed to create comment")),
+    };
 
     // ユーザー情報と一緒に返す
     let comment_with_user = comments::table
@@ -66,25 +72,36 @@ pub async fn create_comment(
         )
         .map_err(|_| {
             HttpResponse::InternalServerError().json("Failed to fetch comment with user info")
-        })?;
+        });
+
+    let comment_with_user = match comment_with_user {
+        Ok(comment) => comment,
+        Err(response) => return Ok(response),
+    };
 
     Ok(HttpResponse::Created().json(comment_with_user))
 }
 
 pub async fn delete_comment(req: HttpRequest, path: web::Path<i32>) -> Result<impl Responder> {
-    let user_id = get_user_id_from_request(&req)
-        .ok_or_else(|| HttpResponse::Unauthorized().json("Authentication required"))?;
+    let user_id = match get_user_id_from_request(&req) {
+        Ok(id) => id,
+        Err(_) => return Ok(HttpResponse::Unauthorized().json("Authentication required")),
+    };
 
     let comment_id = path.into_inner();
-    let mut conn = get_connection()
-        .map_err(|_| HttpResponse::InternalServerError().json("Database connection failed"))?;
+    let mut conn = match get_connection() {
+        Ok(conn) => conn,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Database connection failed")),
+    };
 
     // コメントの所有者チェック
-    let comment = comments::table
+    let comment = match comments::table
         .find(comment_id)
         .first::<Comment>(&mut conn)
-        .optional()
-        .map_err(|_| HttpResponse::InternalServerError().json("Database error"))?;
+        .optional() {
+        Ok(comment) => comment,
+        Err(_) => return Ok(HttpResponse::InternalServerError().json("Database error")),
+    };
 
     match comment {
         Some(comment) => {

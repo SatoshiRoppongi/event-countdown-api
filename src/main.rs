@@ -9,7 +9,7 @@ mod schema;
 mod services;
 mod utils;
 
-use handlers::{auth, comments, events, users};
+use handlers::{admin, auth, comments, events, users};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -31,7 +31,11 @@ async fn main() -> std::io::Result<()> {
                     web::scope("/auth")
                         .route("/register", web::post().to(auth::register))
                         .route("/login", web::post().to(auth::login))
-                        .route("/logout", web::post().to(auth::logout)),
+                        .route("/logout", web::post().to(auth::logout))
+                        .route("/google", web::get().to(auth::google_login))
+                        .route("/google/callback", web::post().to(auth::google_callback))
+                        .route("/twitter", web::get().to(auth::twitter_login))
+                        .route("/twitter/callback", web::post().to(auth::twitter_callback)),
                 )
                 // イベント関連
                 .service(
@@ -58,6 +62,12 @@ async fn main() -> std::io::Result<()> {
                         .route("/me", web::get().to(users::get_profile))
                         .route("/me", web::put().to(users::update_profile))
                         .route("/me/favorites", web::get().to(users::get_favorites)),
+                )
+                // 管理者関連
+                .service(
+                    web::scope("/admin")
+                        .route("/sync/external-events", web::post().to(admin::sync_external_events))
+                        .route("/sync/status", web::get().to(admin::get_sync_status)),
                 ),
         )
     })
